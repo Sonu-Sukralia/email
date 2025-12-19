@@ -1,0 +1,216 @@
+"""
+Outlook Email Notifier - Standalone Script
+Monitors Outlook inbox and shared mailboxes and shows desktop notifications
+"""
+
+import win32com.client
+import time
+from datetime import datetime, timedelta
+import winsound
+import sys
+
+class OutlookMonitor:
+    def __init__(self):
+        self.outlook = None
+        self.namespace = None
+        self.last_check_time = {}
+        
+        # Configuration
+        self.check_interval = 30  # seconds
+        self.shared_mailboxes = [
+            '4data@cap.com',
+            'edocaspian@cap.com',
+            'edolasr@cap.com'
+        ]  # Your shared mailboxes
+        self.play_sound = True
+        
+    def connect_outlook(self):
+        """Connect to Outlook application"""
+        try:
+            self.outlook = win32com.client.Dispatch("Outlook.Application")
+            self.namespace = self.outlook.GetNamespace("MAPI")
+            print("✅ Connected to Outlook successfully")
+            return True
+        except Exception as e:
+            print(f"❌ Error connecting to Outlook: {e}")
+            print("Make sure Outlook is running!")
+            return False
+    
+    def show_notification(self, subject, sender, mailbox=None):
+        """Show Windows notification"""
+        try:
+            from win10toast import ToastNotifier
+            toaster = ToastNotifier()
+            
+            mailbox_label = f" [{mailbox}]" if mailbox else ""
+            title = f"📧 New Email{mailbox_label}"
+            message = f"From: {sender}\nSubject: {subject}"
+            
+            toaster.show_toast(
+                title,
+                message,
+                duration=5,
+                threaded=True
+            )
+        except ImportError:
+            # Fallback to console if win10toast not available
+            mailbox_label = f" [{mailbox}]" if mailbox else ""
+            print(f"\n{'='*60}")
+            print(f"📧 NEW EMAIL{mailbox_label}")
+            print(f"From: {sender}")
+            print(f"Subject: {subject}")
+            print(f"Time: {datetime.now().strftime('%H:%M:%S')}")
+            print(f"{'='*60}\n")
+    
+    def play_notification_sound(self):
+        """Play notification sound"""
+        if self.play_sound:
+            try:
+                winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS)
+            except:
+                print("🔔 *ding*")
+    
+    def check_inbox(self, folder_name=None):
+        """Check inbox for new emails"""
+        try:
+            if folder_name:
+                # Check shared mailbox
+                try:
+                    inbox = self.namespace.Folders(folder_name).Folders("Inbox")
+                    mailbox_key = folder_name
+                except:
+                    print(f"⚠️  Could not access mailbox: {folder_name}")
+                    return
+            else:
+                # Check primary inbox
+                inbox = self.namespace.GetDefaultFolder(6)  # 6 = olFolderInbox
+                mailbox_key = "primary"
+            
+            # Get current time
+            now = datetime.now()
+            
+            # Initialize last check time if not exists
+            if mailbox_key not in self.last_check_time:
+                self.last_check_time[mailbox_key] = now - timedelta(seconds=self.check_interval)
+                print(f"📬 Monitoring: {folder_name if folder_name else 'Primary Inbox'}")
+                return  # Skip first check to avoid spam
+            
+            # Get unread messages
+            messages = inbox.Items
+            messages.Sort("[ReceivedTime]", True)
+            
+            new_count = 0
+            for message in messages:
+                try:
+                    if message.UnRead:
+                        received_time = message.ReceivedTime
+                        
+                        # Convert to datetime if needed
+                        if not isinstance(received_time, datetime):
+                            try:
+                                received_time = datetime.strptime(str(received_time), '%Y-%m-%d %H:%M:%S')
+                            except:
+                                continue
+                        
+                        # Check if received after last check
+                        if received_time > self.last_check_time[mailbox_key]:
+                            self.show_notification(
+                                message.Subject,
+                                message.SenderName,
+                                folder_name
+                            )
+                            new_count += 1
+                except:
+                    continue
+            
+            if new_count > 0:
+                self.play_notification_sound()
+            
+            # Update last check time
+            self.last_check_time[mailbox_key] = now
+            
+        except Exception as e:
+            print(f"❌ Error checking inbox: {e}")
+    
+    def configure(self):
+        """Interactive configuration"""
+        print("\n" + "="*60)
+        print("OUTLOOK EMAIL NOTIFIER - CONFIGURATION")
+        print("="*60)
+        
+        # Check interval
+        try:
+            interval = input(f"\nCheck interval in seconds (current: {self.check_interval}): ").strip()
+            if interval:
+                self.check_interval = int(interval)
+        except:
+            pass
+        
+        # Shared mailboxes
+        print("\nShared mailboxes (enter names as they appear in Outlook)")
+        print("Current:", self.shared_mailboxes if self.shared_mailboxes else "None")
+        
+        while True:
+            mailbox = input("Add shared mailbox (or press Enter to finish): ").strip()
+            if not mailbox:
+                break
+            if mailbox not in self.shared_mailboxes:
+                self.shared_mailboxes.append(mailbox)
+                print(f"  ✅ Added: {mailbox}")
+        
+        # Sound
+        sound = input(f"\nPlay notification sound? (Y/n, current: {'Y' if self.play_sound else 'n'}): ").strip().lower()
+        if sound in ['n', 'no']:
+            self.play_sound = False
+        elif sound in ['y', 'yes', '']:
+            self.play_sound = True
+        
+        print("\n✅ Configuration saved!")
+        print("="*60 + "\n")
+    
+    def monitor(self):
+        """Main monitoring loop"""
+        if not self.connect_outlook():
+            return
+        
+        # Ask for configuration
+        config = input("\nWould you like to configure settings? (y/N): ").strip().lower()
+        if config in ['y', 'yes']:
+            self.configure()
+        
+        print(f"\n🚀 Starting email monitor...")
+        print(f"⏱️  Check interval: {self.check_interval} seconds")
+        print(f"📧 Monitoring: Primary Inbox")
+        for mailbox in self.shared_mailboxes:
+            print(f"📧 Monitoring: {mailbox}")
+        print("\n⌨️  Press Ctrl+C to stop\n")
+        
+        try:
+            while True:
+                # Check primary inbox
+                self.check_inbox()
+                
+                # Check shared mailboxes
+                for mailbox in self.shared_mailboxes:
+                    self.check_inbox(mailbox)
+                
+                time.sleep(self.check_interval)
+                
+        except KeyboardInterrupt:
+            print("\n\n⏹️  Monitor stopped by user")
+        except Exception as e:
+            print(f"\n❌ Monitor error: {e}")
+
+def main():
+    print("""
+╔═══════════════════════════════════════════════════════════╗
+║         OUTLOOK EMAIL NOTIFIER FOR VS CODE                ║
+║         Standalone Python Script                          ║
+╚═══════════════════════════════════════════════════════════╝
+    """)
+    
+    monitor = OutlookMonitor()
+    monitor.monitor()
+
+if __name__ == "__main__":
+    main()
